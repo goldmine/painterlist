@@ -18,6 +18,7 @@ const PAINTERS_FILE = join(BASE_DIR, 'painters.json');
 const IMAGES_DIR = join(BASE_DIR, 'images');
 const BATCH_SIZE = 50;
 const API_URL = 'https://en.wikipedia.org/w/api.php';
+const UA = 'PainterList/1.0 (https://github.com/goldmine/painterlist)';
 
 function sanitizeFilename(name) {
   return name
@@ -29,32 +30,24 @@ function sanitizeFilename(name) {
 
 function httpsGet(url) {
   return new Promise((resolve, reject) => {
-    get(url, { headers: { 'User-Agent': 'PainterList/1.0' } }, (res) => {
-      if (res.statusCode < 200 || res.statusCode >= 300) {
-        reject(new Error(`HTTP ${res.statusCode}`));
-        res.resume();
-        return;
-      }
+    get(url, { headers: { 'User-Agent': UA } }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
-      res.on('end', () => resolve(Buffer.concat(chunks)));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }));
     }).on('error', reject);
   });
 }
 
-async function downloadImage(url, filepath) {
-  try {
-    const data = await httpsGet(url);
-    return new Promise((resolve) => {
+function downloadImage(url, filepath) {
+  return new Promise((resolve) => {
+    get(url, { headers: { 'User-Agent': UA } }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); resolve(false); return; }
       const ws = createWriteStream(filepath);
-      ws.write(data);
-      ws.end();
+      res.pipe(ws);
       ws.on('finish', () => resolve(true));
       ws.on('error', () => resolve(false));
-    });
-  } catch {
-    return false;
-  }
+    }).on('error', () => resolve(false));
+  });
 }
 
 function getExtension(url) {
@@ -63,11 +56,27 @@ function getExtension(url) {
   return ['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(ext) ? ext : '.jpg';
 }
 
+async function apiCallWithRetry(url, retries = 5) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    const { status, body } = await httpsGet(url);
+    if (status === 200) return JSON.parse(body.toString());
+    if (status === 429) {
+      const wait = Math.min(60, attempt * 10);
+      console.log(`    429 rate limited — waiting ${wait}s (attempt ${attempt}/${retries})`);
+      await new Promise((r) => setTimeout(r, wait * 1000));
+      continue;
+    }
+    throw new Error(`HTTP ${status}`);
+  }
+  throw new Error('Exhausted retries');
+}
+
 async function main() {
   await mkdir(IMAGES_DIR, { recursive: true });
 
   const raw = await readFile(PAINTERS_FILE, 'utf-8');
   const painters = JSON.parse(raw);
+  const total = painters.length;
 
   const hasAll = painters.every((p) => p.image_path);
   if (hasAll) {
@@ -75,14 +84,13 @@ async function main() {
     return;
   }
 
-  const total = painters.length;
   console.log(`Processing ${total} painters...`);
 
   for (let start = 0; start < total; start += BATCH_SIZE) {
     const batch = painters.slice(start, start + BATCH_SIZE);
     const titles = batch.map((p) => p.name);
 
-    // Step 1: Fetch image URLs from Wikipedia API
+    // Fetch image URLs from Wikipedia API (with retry on 429)
     const params = new URLSearchParams({
       action: 'query',
       prop: 'pageimages',
@@ -92,11 +100,9 @@ async function main() {
       format: 'json',
       origin: '*',
     });
-    const apiUrl = `${API_URL}?${params}`;
 
     try {
-      const buf = await httpsGet(apiUrl);
-      const data = JSON.parse(buf.toString());
+      const data = await apiCallWithRetry(`${API_URL}?${params}`);
 
       const redirectMap = {};
       for (const r of data.query?.redirects ?? []) {
@@ -111,15 +117,17 @@ async function main() {
       }
 
       for (const painter of batch) {
-        const url =
-          titleThumb[painter.name] ?? titleThumb[redirectMap[painter.name]];
+        const url = titleThumb[painter.name] ?? titleThumb[redirectMap[painter.name]];
         if (url) painter.image_url = url;
       }
+
+      // Save progress after each successful API batch
+      await writeFile(PAINTERS_FILE, JSON.stringify(painters, null, 2), 'utf-8');
     } catch (err) {
-      console.log(`  Batch API call failed: ${err.message}`);
+      console.log(`  Batch API call failed permanently: ${err.message}`);
     }
 
-    // Step 2: Download images
+    // Download images
     for (const painter of batch) {
       const imgUrl = painter.image_url;
       if (!imgUrl) continue;
@@ -138,20 +146,20 @@ async function main() {
       if (ok) {
         painter.image_path = filepath;
         console.log(`    Downloaded: ${filename}`);
-      } else {
-        delete painter.image_url;
       }
     }
 
-    await new Promise((r) => setTimeout(r, 500));
+    // Save progress after downloads too
+    await writeFile(PAINTERS_FILE, JSON.stringify(painters, null, 2), 'utf-8');
 
     const withUrl = painters.filter((p) => p.image_url).length;
     const withFile = painters.filter((p) => p.image_path).length;
     const done = Math.min(start + BATCH_SIZE, total);
     console.log(`  ${done}/${total} — ${withUrl} URLs, ${withFile} files`);
-  }
 
-  await writeFile(PAINTERS_FILE, JSON.stringify(painters, null, 2), 'utf-8');
+    // Polite delay between batches
+    await new Promise((r) => setTimeout(r, 1000));
+  }
 
   const withUrl = painters.filter((p) => p.image_url).length;
   const withFile = painters.filter((p) => p.image_path).length;
