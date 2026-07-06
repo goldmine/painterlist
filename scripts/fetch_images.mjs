@@ -41,12 +41,16 @@ function httpsGet(url) {
 function downloadImage(url, filepath) {
   return new Promise((resolve) => {
     get(url, { headers: { 'User-Agent': UA } }, (res) => {
-      if (res.statusCode !== 200) { res.resume(); resolve(false); return; }
+      if (res.statusCode !== 200) {
+        res.resume();
+        resolve(`HTTP ${res.statusCode}`);
+        return;
+      }
       const ws = createWriteStream(filepath);
       res.pipe(ws);
       ws.on('finish', () => resolve(true));
-      ws.on('error', () => resolve(false));
-    }).on('error', () => resolve(false));
+      ws.on('error', (e) => resolve(`Write error: ${e.message}`));
+    }).on('error', (e) => resolve(`Request error: ${e.message}`));
   });
 }
 
@@ -142,10 +146,21 @@ async function main() {
         continue;
       }
 
-      const ok = await downloadImage(imgUrl, filepath);
-      if (ok) {
+      // Retry download up to 3 times
+      let result;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        result = await downloadImage(imgUrl, filepath);
+        if (result === true) break;
+        if (attempt < 3) {
+          console.log(`    Retry ${filename} (${result}) — attempt ${attempt + 1}/3`);
+          await new Promise((r) => setTimeout(r, 2000 * attempt));
+        }
+      }
+      if (result === true) {
         painter.image_path = filepath;
         console.log(`    Downloaded: ${filename}`);
+      } else {
+        console.log(`    FAILED: ${filename} (${result})`);
       }
     }
 
