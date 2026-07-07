@@ -286,7 +286,17 @@ async function main() {
     await new Promise((r) => setTimeout(r, 1000));
   }
 
-  console.log(`  Total: ${allPaintings.length} paintings`);
+  // Deduplicate by image_url (same image = same painting file)
+  const seenUrls = new Set();
+  const deduped = [];
+  for (const p of allPaintings) {
+    if (p.image_url && seenUrls.has(p.image_url)) continue;
+    if (p.image_url) seenUrls.add(p.image_url);
+    deduped.push(p);
+  }
+  allPaintings.length = 0;
+  allPaintings.push(...deduped);
+  console.log(`  Total: ${allPaintings.length} paintings (after dedup)`);
 
   // === Step 3: Download images ===
   console.log('\n=== Step 3: Downloading images ===');
