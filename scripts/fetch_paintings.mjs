@@ -154,6 +154,13 @@ async function main() {
   );
   console.log(`Processing ${painters.length} painters in rank range`);
 
+  // Load existing paintings.json for resume support
+  let existingPaintings = [];
+  try {
+    existingPaintings = JSON.parse(await readFile(PAINTINGS_FILE, 'utf-8'));
+    console.log(`  Found ${existingPaintings.length} existing paintings in ${PAINTINGS_FILE}`);
+  } catch {}
+
   // === Step 1: Resolve QIDs ===
   console.log('=== Step 1: Resolving Wikidata QIDs ===');
 
@@ -202,12 +209,16 @@ async function main() {
   // === Step 2: SPARQL ===
   console.log('\n=== Step 2: Fetching paintings via SPARQL ===');
 
-  const allPaintings = [];
   const qidToPainter = {};
   for (const p of painters) {
     if (p.wikidata_qid) qidToPainter[p.wikidata_qid] = p;
   }
-  const qids = Object.keys(qidToPainter);
+
+  // Skip painters already covered by existing paintings
+  const coveredPainterIds = new Set(existingPaintings.map((p) => p.painter_id));
+  const qids = Object.keys(qidToPainter).filter((q) => !coveredPainterIds.has(qidToPainter[q].id));
+  const allPaintings = [...existingPaintings];
+  console.log(`  ${existingPaintings.length} existing, ${qids.length} painters need fetch`);
   const totalBatches = Math.ceil(qids.length / QID_BATCH_SIZE);
 
   for (let s = 0; s < qids.length; s += QID_BATCH_SIZE) {
@@ -268,6 +279,9 @@ async function main() {
     } catch (err) {
       console.log(`  SPARQL batch ${s / QID_BATCH_SIZE + 1}/${totalBatches} failed: ${err.message}`);
     }
+
+    // Save paintings metadata after each SPARQL batch for resume safety
+    await writeFile(PAINTINGS_FILE, JSON.stringify(allPaintings, null, 2));
 
     await new Promise((r) => setTimeout(r, 1000));
   }
