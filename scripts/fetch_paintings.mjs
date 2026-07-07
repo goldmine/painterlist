@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { existsSync, createWriteStream } from 'node:fs';
 import { get, request } from 'node:https';
 import { createHash } from 'node:crypto';
@@ -88,6 +88,37 @@ async function sparqlQuery(query, retries = 5) {
     throw new Error(`SPARQL HTTP ${status}: ${snippet}`);
   }
   throw new Error('Exhausted SPARQL retries');
+}
+
+function imageFileHash(imageUrl) {
+  return createHash('md5').update(imageUrl).digest('hex').slice(0, 8);
+}
+
+function getPaintingFilename(painterId, painterName, imageUrl, title, ext) {
+  const safeName = sanitizeFilename(painterName);
+  const safeTitle = sanitizeFilename(title);
+  const hash = imageFileHash(imageUrl);
+  return `${String(painterId).padStart(4, '0')}_${safeName}_${hash}_${safeTitle}${ext}`;
+}
+
+async function scanExistingFiles(existingPaintings) {
+  const map = {};
+  for (const p of existingPaintings) {
+    if (p.local_path && p.image_url && existsSync(p.local_path)) {
+      map[imageFileHash(p.image_url)] = p.local_path;
+    }
+  }
+  try {
+    const files = await readdir(PAINTINGS_DIR);
+    for (const f of files) {
+      const m = f.match(/^\d{4}_[^_]+_([a-f0-9]{8})_/);
+      if (m) {
+        const path = join(PAINTINGS_DIR, f);
+        if (!map[m[1]] && existsSync(path)) map[m[1]] = path;
+      }
+    }
+  } catch {}
+  return map;
 }
 
 function getWikimediaFullResUrl(imageUrl) {
@@ -298,6 +329,13 @@ async function main() {
   allPaintings.push(...deduped);
   console.log(`  Total: ${allPaintings.length} paintings (after dedup)`);
 
+  // Save after dedup
+  await writeFile(PAINTINGS_FILE, JSON.stringify(allPaintings, null, 2));
+
+  // Build lookup of already-downloaded files by image hash
+  const existingFiles = await scanExistingFiles(existingPaintings);
+  console.log(`  ${Object.keys(existingFiles).length} existing image files found in ${PAINTINGS_DIR}/`);
+
   // === Step 3: Download images ===
   console.log('\n=== Step 3: Downloading images ===');
 
@@ -322,11 +360,14 @@ async function main() {
     const ext = getExtension(fullUrl);
     const safeName = sanitizeFilename(p.painter_name);
     const safeTitle = sanitizeFilename(p.title);
-    const filename = `${String(p.painter_id).padStart(4, '0')}_${safeName}_${String(i).padStart(5, '0')}_${safeTitle}${ext}`;
+    const urlHash = imageFileHash(p.image_url);
+    const filename = `${String(p.painter_id).padStart(4, '0')}_${safeName}_${urlHash}_${safeTitle}${ext}`;
     const filepath = join(PAINTINGS_DIR, filename);
 
-    if (existsSync(filepath)) {
-      p.local_path = filepath;
+    const existingPath = existingFiles[urlHash] || (existsSync(filepath) ? filepath : null);
+    if (existingPath) {
+      p.local_path = existingPath;
+      existingFiles[urlHash] = existingPath;
       skCount++;
       continue;
     }
