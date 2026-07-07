@@ -215,7 +215,7 @@ async function main() {
     const qidList = batch.map((q) => `wd:${q}`).join(' ');
 
     const query = `
-      SELECT ?painting ?paintingLabel ?image ?inception ?collectionLabel ?materialLabel ?genreLabel WHERE {
+      SELECT ?artist ?painting ?paintingLabel ?image ?inception ?collectionLabel ?materialLabel ?genreLabel WHERE {
         VALUES ?artist { ${qidList} }
         ?painting wdt:P31 wd:Q3305213;
                   wdt:P170 ?artist;
