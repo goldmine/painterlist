@@ -111,10 +111,25 @@ async function scanExistingFiles(existingPaintings) {
   try {
     const files = await readdir(PAINTINGS_DIR);
     for (const f of files) {
-      const m = f.match(/^\d{4}_[^_]+_([a-f0-9]{8})_/);
-      if (m) {
-        const path = join(PAINTINGS_DIR, f);
-        if (!map[m[1]] && existsSync(path)) map[m[1]] = path;
+      const path = join(PAINTINGS_DIR, f);
+      // New hash-based: 0001_name_a1b2c3d4_title.jpg
+      const newM = f.match(/^(\d{4})_[^_]+_([a-f0-9]{8})_/);
+      if (newM) {
+        if (!map[newM[2]] && existsSync(path)) map[newM[2]] = path;
+        continue;
+      }
+      // Old index-based: 0001_name_00008_title.jpg — match by painter_id + title
+      const oldM = f.match(/^(\d{4})_[^_]+_\d{5}_(.+)\.\w+$/);
+      if (oldM) {
+        const pid = parseInt(oldM[1], 10);
+        const fileTitle = oldM[2];
+        for (const p of existingPaintings) {
+          if (p.painter_id === pid && sanitizeFilename(p.title) === fileTitle && p.image_url) {
+            const hash = imageFileHash(p.image_url);
+            if (!map[hash] && existsSync(path)) map[hash] = path;
+            break;
+          }
+        }
       }
     }
   } catch {}
