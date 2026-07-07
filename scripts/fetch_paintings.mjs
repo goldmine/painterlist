@@ -410,7 +410,7 @@ async function main() {
       await writeFile(PAINTINGS_FILE, JSON.stringify(allPaintings, null, 2));
     }
 
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 1000));
   }
 
   // === Save ===
